@@ -14,7 +14,8 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 # ── Configuration ──────────────────────────────────────────────────────────────
 BIRTHDAY_ROLE_NAME = "Birthday!!"
 BIRTHDAY_CHANNEL_ID = 681924312604999754  # 🛡・mil-hangout
-DATA_FILE = "birthdays.json"
+MODERATOR_ROLE_NAME = "Moderator"
+DATA_FILE = "/data/birthdays.json"
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -31,12 +32,16 @@ def load_birthdays() -> dict:
     return {}
 
 def save_birthdays(data: dict):
+    os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 def format_date(month: int, day: int) -> str:
     dt = datetime(2001, month, day)
     return dt.strftime("%B %#d")
+
+def is_moderator(interaction: discord.Interaction) -> bool:
+    return any(role.name == MODERATOR_ROLE_NAME for role in interaction.user.roles)
 
 # ── Events ─────────────────────────────────────────────────────────────────────
 @bot.event
@@ -76,6 +81,35 @@ async def setbirthday(interaction: discord.Interaction, month: int, day: int):
         f"🎂 Got it! Your birthday is saved as **{format_date(month, day)}**.", ephemeral=True
     )
 
+@bot.tree.command(name="setbirthdayfor", description="[Moderator] Set a birthday for another user")
+@app_commands.describe(user="The member to set a birthday for", month="Month (1-12)", day="Day (1-31)")
+async def setbirthdayfor(interaction: discord.Interaction, user: discord.Member, month: int, day: int):
+    if not is_moderator(interaction):
+        await interaction.response.send_message("❌ You need the Moderator role to use this command.", ephemeral=True)
+        return
+    if not (1 <= month <= 12):
+        await interaction.response.send_message("❌ Month must be between 1 and 12.", ephemeral=True)
+        return
+    if not (1 <= day <= 31):
+        await interaction.response.send_message("❌ Day must be between 1 and 31.", ephemeral=True)
+        return
+    try:
+        datetime(year=2001, month=month, day=day)
+    except ValueError:
+        await interaction.response.send_message(
+            f"❌ {month}/{day} isn't a valid date.", ephemeral=True
+        )
+        return
+
+    data = load_birthdays()
+    user_id = str(user.id)
+    data[user_id] = {"month": month, "day": day, "announced": False}
+    save_birthdays(data)
+
+    await interaction.response.send_message(
+        f"🎂 Birthday for **{user.display_name}** saved as **{format_date(month, day)}**.", ephemeral=True
+    )
+
 @bot.tree.command(name="mybirthday", description="Check what birthday is saved for you")
 async def mybirthday(interaction: discord.Interaction):
     data = load_birthdays()
@@ -100,6 +134,21 @@ async def removebirthday(interaction: discord.Interaction):
     del data[user_id]
     save_birthdays(data)
     await interaction.response.send_message("🗑️ Your birthday has been removed.", ephemeral=True)
+
+@bot.tree.command(name="removebirthdayfor", description="[Moderator] Remove a birthday for another user")
+@app_commands.describe(user="The member whose birthday to remove")
+async def removebirthdayfor(interaction: discord.Interaction, user: discord.Member):
+    if not is_moderator(interaction):
+        await interaction.response.send_message("❌ You need the Moderator role to use this command.", ephemeral=True)
+        return
+    data = load_birthdays()
+    user_id = str(user.id)
+    if user_id not in data:
+        await interaction.response.send_message(f"**{user.display_name}** doesn't have a birthday saved.", ephemeral=True)
+        return
+    del data[user_id]
+    save_birthdays(data)
+    await interaction.response.send_message(f"🗑️ Birthday for **{user.display_name}** has been removed.", ephemeral=True)
 
 @bot.tree.command(name="listbirthdays", description="See all upcoming birthdays in the server")
 async def listbirthdays(interaction: discord.Interaction):
@@ -142,15 +191,12 @@ async def listbirthdays(interaction: discord.Interaction):
 # ── Hourly check loop ──────────────────────────────────────────────────────────
 @tasks.loop(hours=1)
 async def hourly_birthday_check():
-    # Railway runs UTC. Eastern Standard = UTC-5, Eastern Daylight = UTC-4
-    # We check every hour so late registrations are caught within 60 minutes
     now = datetime.utcnow()
     today_month, today_day = now.month, now.day
     data = load_birthdays()
     data_changed = False
 
     for guild in bot.guilds:
-        # Find or create Birthday role
         role = discord.utils.get(guild.roles, name=BIRTHDAY_ROLE_NAME)
         if not role:
             try:
@@ -174,14 +220,12 @@ async def hourly_birthday_check():
             already_announced = bd.get("announced", False)
 
             if is_birthday:
-                # Assign role if they don't have it
                 if role not in member.roles:
                     try:
                         await member.add_roles(role, reason="Happy Birthday!")
                     except discord.Forbidden:
                         print(f"⚠️ Can't assign role to {member}")
 
-                # Announce only once per birthday
                 if not already_announced and channel:
                     await channel.send(
                         f"🎂 Happy Birthday, {member.mention}!"
@@ -190,13 +234,11 @@ async def hourly_birthday_check():
                     data_changed = True
 
             else:
-                # Remove role if it's no longer their birthday
                 if role in member.roles:
                     try:
                         await member.remove_roles(role, reason="Birthday over")
                     except discord.Forbidden:
                         pass
-                # Reset announced flag for next year
                 if already_announced:
                     data[uid]["announced"] = False
                     data_changed = True
@@ -208,7 +250,6 @@ async def hourly_birthday_check():
 async def before_check():
     await bot.wait_until_ready()
     now = datetime.utcnow()
-    # Wait until the next top of the hour
     seconds_to_wait = (60 - now.minute) * 60 - now.second
     print(f"⏰ First birthday check in {seconds_to_wait // 60} minutes (then every hour)")
     await asyncio.sleep(seconds_to_wait)
