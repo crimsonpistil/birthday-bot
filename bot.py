@@ -12,9 +12,9 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-BIRTHDAY_ROLE_NAME = "Birthday"          # Role to assign on birthday
-BIRTHDAY_CHANNEL_NAME = "general"        # Channel to send birthday messages
-DATA_FILE = "birthdays.json"             # Local storage file
+BIRTHDAY_ROLE_NAME = "Birthday"
+BIRTHDAY_CHANNEL_ID = 681924312604999754  # 🛡・mil-hangout
+DATA_FILE = "birthdays.json"
 
 # ── Bot setup ──────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -35,9 +35,7 @@ def save_birthdays(data: dict):
         json.dump(data, f, indent=2)
 
 def format_date(month: int, day: int) -> str:
-    """Format a month/day into a readable string (Windows compatible)."""
     dt = datetime(2001, month, day)
-    # %#d removes leading zero on Windows (%-d on Mac/Linux)
     return dt.strftime("%B %#d")
 
 # ── Events ─────────────────────────────────────────────────────────────────────
@@ -49,7 +47,7 @@ async def on_ready():
         print(f"✅ Synced {len(synced)} slash command(s)")
     except Exception as e:
         print(f"❌ Failed to sync commands: {e}")
-    daily_birthday_check.start()
+    hourly_birthday_check.start()
 
 # ── Slash Commands ─────────────────────────────────────────────────────────────
 @bot.tree.command(name="setbirthday", description="Set your birthday (month and day only)")
@@ -71,7 +69,7 @@ async def setbirthday(interaction: discord.Interaction, month: int, day: int):
 
     data = load_birthdays()
     user_id = str(interaction.user.id)
-    data[user_id] = {"month": month, "day": day}
+    data[user_id] = {"month": month, "day": day, "announced": False}
     save_birthdays(data)
 
     await interaction.response.send_message(
@@ -110,7 +108,7 @@ async def listbirthdays(interaction: discord.Interaction):
         await interaction.response.send_message("No birthdays saved yet!", ephemeral=True)
         return
 
-    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     entries = []
 
     for uid, bd in data.items():
@@ -141,14 +139,18 @@ async def listbirthdays(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed)
 
-# ── Daily check loop ───────────────────────────────────────────────────────────
-@tasks.loop(hours=24)
-async def daily_birthday_check():
-    now = datetime.now()
+# ── Hourly check loop ──────────────────────────────────────────────────────────
+@tasks.loop(hours=1)
+async def hourly_birthday_check():
+    # Railway runs UTC. Eastern Standard = UTC-5, Eastern Daylight = UTC-4
+    # We check every hour so late registrations are caught within 60 minutes
+    now = datetime.utcnow()
     today_month, today_day = now.month, now.day
     data = load_birthdays()
+    data_changed = False
 
     for guild in bot.guilds:
+        # Find or create Birthday role
         role = discord.utils.get(guild.roles, name=BIRTHDAY_ROLE_NAME)
         if not role:
             try:
@@ -161,8 +163,7 @@ async def daily_birthday_check():
                 print(f"⚠️ Missing permissions to create role in {guild.name}")
                 continue
 
-        channel = discord.utils.get(guild.text_channels, name=BIRTHDAY_CHANNEL_NAME)
-        birthday_members = []
+        channel = bot.get_channel(BIRTHDAY_CHANNEL_ID)
 
         for uid, bd in data.items():
             member = guild.get_member(int(uid))
@@ -170,38 +171,47 @@ async def daily_birthday_check():
                 continue
 
             is_birthday = (bd["month"] == today_month and bd["day"] == today_day)
+            already_announced = bd.get("announced", False)
 
             if is_birthday:
+                # Assign role if they don't have it
                 if role not in member.roles:
                     try:
                         await member.add_roles(role, reason="Happy Birthday!")
-                        birthday_members.append(member)
                     except discord.Forbidden:
                         print(f"⚠️ Can't assign role to {member}")
+
+                # Announce only once per birthday
+                if not already_announced and channel:
+                    await channel.send(
+                        f"🎂 Happy {role.mention}, {member.mention}!"
+                    )
+                    data[uid]["announced"] = True
+                    data_changed = True
+
             else:
+                # Remove role if it's no longer their birthday
                 if role in member.roles:
                     try:
                         await member.remove_roles(role, reason="Birthday over")
                     except discord.Forbidden:
                         pass
+                # Reset announced flag for next year
+                if already_announced:
+                    data[uid]["announced"] = False
+                    data_changed = True
 
-        if birthday_members and channel:
-            mentions = " ".join(m.mention for m in birthday_members)
-            await channel.send(
-                f"🎉🎂 Happy Birthday {mentions}! "
-                f"Wishing you an amazing day! 🥳🎈"
-            )
+    if data_changed:
+        save_birthdays(data)
 
-@daily_birthday_check.before_loop
+@hourly_birthday_check.before_loop
 async def before_check():
     await bot.wait_until_ready()
-    now = datetime.now()
-    seconds_until_midnight = (
-        (24 - now.hour - 1) * 3600 + (60 - now.minute - 1) * 60 + (60 - now.second)
-    )
-    print(f"⏰ First birthday check in {seconds_until_midnight // 3600}h "
-          f"{(seconds_until_midnight % 3600) // 60}m")
-    await asyncio.sleep(seconds_until_midnight)
+    now = datetime.utcnow()
+    # Wait until the next top of the hour
+    seconds_to_wait = (60 - now.minute) * 60 - now.second
+    print(f"⏰ First birthday check in {seconds_to_wait // 60} minutes (then every hour)")
+    await asyncio.sleep(seconds_to_wait)
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
