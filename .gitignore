@@ -1,0 +1,4 @@
+.env
+birthdays.json
+__pycache__/
+*.pyc
