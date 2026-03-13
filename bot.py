@@ -12,7 +12,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-BIRTHDAY_ROLE_NAME = "Birthday"
+BIRTHDAY_ROLE_NAME = "Birthday!!"
 BIRTHDAY_CHANNEL_ID = 681924312604999754  # 🛡・mil-hangout
 DATA_FILE = "birthdays.json"
 
@@ -184,7 +184,7 @@ async def hourly_birthday_check():
                 # Announce only once per birthday
                 if not already_announced and channel:
                     await channel.send(
-                        f"🎂 Happy {role.mention}, {member.mention}!"
+                        f"🎂 Happy Birthday, {member.mention}!"
                     )
                     data[uid]["announced"] = True
                     data_changed = True
